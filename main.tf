@@ -9,7 +9,7 @@ locals {
   aws_region_name = "us-east-2"
 
   egress_filter_allow_all = false
-  access_logs_enable = false
+  access_logs_enable      = false
 }
 
 resource "aws_ecs_cluster" "current" {
@@ -28,7 +28,7 @@ resource "aws_ecs_cluster" "current" {
 resource "aws_security_group" "http" {
   name        = "${local.name}-lb-http"
   description = "Allow HTTP ingress traffic to load balancer"
-  vpc_id      = aws_vpc.app-vpc.id
+  vpc_id      = aws_vpc.current.id
 
   ingress {
     from_port   = 80
@@ -41,7 +41,7 @@ resource "aws_security_group" "http" {
 resource "aws_security_group" "egress-all" {
   name        = "${local.name}-lb-egress-all"
   description = "Allow all outbound traffic"
-  vpc_id      = aws_vpc.app-vpc.id
+  vpc_id      = aws_vpc.current.id
 
   egress {
     from_port   = 0
@@ -54,7 +54,7 @@ resource "aws_security_group" "egress-all" {
 resource "aws_security_group" "https" {
   name        = "${local.name}-lb-https"
   description = "Allow HTTPS ingress traffic to load balancer"
-  vpc_id      = aws_vpc.app-vpc.id
+  vpc_id      = aws_vpc.current.id
 
   ingress {
     from_port   = 443
@@ -67,7 +67,7 @@ resource "aws_security_group" "https" {
 resource "aws_security_group" "lb" {
   name        = "${local.name}-lb"
   description = "This is the loadbalancer security group, used to allow traffic from the lb"
-  vpc_id      = aws_vpc.app-vpc.id
+  vpc_id      = aws_vpc.current.id
 }
 
 
@@ -76,10 +76,10 @@ resource "aws_lb" "current" {
   internal           = false
   load_balancer_type = "application"
 
-  subnets = [
-    aws_subnet.public.id,
-    aws_subnet.private.id,
-  ]
+  subnets = concat(
+    aws_subnet.public[*].id,
+//    aws_subnet.private[*].id,
+  )
 
   security_groups = [
     aws_security_group.lb.id,
@@ -88,7 +88,7 @@ resource "aws_lb" "current" {
     aws_security_group.https.id,
   ]
 
-  depends_on = [aws_internet_gateway.igw]
+  depends_on = [aws_vpc.current]
 
   dynamic "access_logs" {
     for_each = local.access_logs_enable ? [1] : []
@@ -116,17 +116,17 @@ resource "aws_appmesh_mesh" "current" {
 }
 
 resource "aws_route53_zone" "private" {
-  name        = "${local.name}.local"
+  name = "${local.name}.local"
 
   vpc {
-    vpc_id = aws_vpc.app-vpc.id
+    vpc_id = aws_vpc.current.id
   }
 }
 
 resource "aws_service_discovery_private_dns_namespace" "current" {
   name        = "sd.${aws_route53_zone.private.name}"
   description = "This domain is being used for service discovery."
-  vpc         = aws_vpc.app-vpc.id
+  vpc         = aws_vpc.current.id
 }
 
 resource "aws_lb_listener" "front_end" {
@@ -145,11 +145,11 @@ resource "aws_lb_listener" "front_end" {
 }
 
 resource "aws_lb_target_group" "current" {
-  name               = "lb-tg-${local.name}"
+  name        = "lb-tg-${local.name}"
   port        = 3000
   protocol    = "HTTP"
   target_type = "ip"
-  vpc_id   = aws_vpc.app-vpc.id
+  vpc_id      = aws_vpc.current.id
 
   health_check {
     enabled = true
@@ -171,23 +171,21 @@ module "create-group1-ecs" {
 
   container_port = 3000
 
-  cluster = aws_ecs_cluster.current.id
+  cluster     = aws_ecs_cluster.current.id
   private_dns = aws_route53_zone.private
 
   desired_count = 1
 
   private_dns_namespace = aws_service_discovery_private_dns_namespace.current
 
-  virtual_node_listener_enable= false
+  virtual_node_listener_enable = false
 
-  vpc = aws_vpc.app-vpc
+  vpc = aws_vpc.current
 
   security_groups = [
   ]
 
-  subnets = [
-    aws_subnet.private.id,
-  ]
+  subnets = aws_subnet.private.*.id
 
   aws_region_name = local.aws_region_name
 
@@ -196,7 +194,7 @@ module "create-group1-ecs" {
   ]
 
   environment = [{
-    name = "SECRET"
+    name  = "SECRET"
     value = "http://group2-xyz.simpleapp.local:3000"
   }]
 
@@ -207,16 +205,15 @@ module "create-group1-ecs" {
 module "create-group2-ecs" {
   source = "./modules/ecs"
 
-  service_name    = "${local.name}-group2"
+  service_name = "${local.name}-group2"
 
   task_identifier = "xyz"
 
   image = "931700537194.dkr.ecr.us-east-2.amazonaws.com/hello-world:latest"
 
-  virtual_node_listener_enable= true
+  virtual_node_listener_enable = true
 
-  vpc = aws_vpc.app-vpc
-
+  vpc      = aws_vpc.current
   app_mesh = aws_appmesh_mesh.current
 
   container_port = 3000
@@ -234,9 +231,7 @@ module "create-group2-ecs" {
   security_groups = [
   ]
 
-  subnets = [
-    aws_subnet.private.id,
-  ]
+  subnets = aws_subnet.private.*.id
 
   aws_region_name = local.aws_region_name
 

@@ -1,114 +1,104 @@
-resource "aws_vpc" "app-vpc" {
-  cidr_block = "10.0.0.0/16"
-  enable_classiclink = "false"
-  instance_tenancy = "default"    
+resource "aws_vpc" "current" {
+  cidr_block           = "10.0.0.0/16"
+  enable_classiclink   = "false"
+  instance_tenancy     = "default"
   enable_dns_hostnames = true
-  enable_dns_support = true
+  enable_dns_support   = true
 
   tags = merge(local.tags, {
-    Name = "app-vpc"
+    Name = "${local.name}-vpc"
     // Name = "public-${element(data.aws_availability_zones.available.names, count.index)}"
   })
 }
 
-resource "aws_vpc_dhcp_options" "foo" {
-  domain_name          = "${local.name}.local"
-  domain_name_servers  = ["AmazonProvidedDNS"]
+resource "aws_vpc_dhcp_options" "current" {
+  domain_name         = "${local.name}.local"
+  domain_name_servers = ["AmazonProvidedDNS"]
 }
 
 resource "aws_vpc_dhcp_options_association" "dns_resolver" {
-  vpc_id          = aws_vpc.app-vpc.id
-  dhcp_options_id = aws_vpc_dhcp_options.foo.id
+  vpc_id          = aws_vpc.current.id
+  dhcp_options_id = aws_vpc_dhcp_options.current.id
 }
 
 data "aws_availability_zones" "available" {}
 
 resource "aws_subnet" "public" {
-  vpc_id     = aws_vpc.app-vpc.id
-  cidr_block = "10.0.1.0/24"
-  availability_zone       = data.aws_availability_zones.available.names.0
-
+  count                   = length(data.aws_availability_zones.available.names)
+  vpc_id                  = aws_vpc.current.id
+  cidr_block              = "10.0.${count.index*10+0}.0/24"
+  map_public_ip_on_launch = false
+  availability_zone       = element(data.aws_availability_zones.available.names, count.index)
   tags = merge(local.tags, {
-    Name = "subnet-${aws_vpc.app-vpc.tags.Name}-public-${data.aws_availability_zones.available.names.1}"
-    // Name = "public-${element(data.aws_availability_zones.available.names, count.index)}"
+    Name = "${aws_vpc.current.tags.Name}-public-${element(data.aws_availability_zones.available.names, count.index)}"
   })
 }
 
+
 resource "aws_subnet" "private" {
-  vpc_id     = aws_vpc.app-vpc.id
-  cidr_block = "10.0.2.0/24"
-  availability_zone       = data.aws_availability_zones.available.names.1
-
-  tags = merge(local.tags, {
-    Name = "subnet-${aws_vpc.app-vpc.tags.Name}-private-${data.aws_availability_zones.available.names.1}"
-    // Name = "public-${element(data.aws_availability_zones.available.names, count.index)}"
-  })
-
-  /*
-  count                   = "${length(data.aws_availability_zones.available.names)}"
-  vpc_id                  = "${aws_vpc.example.id}"
-  cidr_block              = "10.0.${count.index}.0/24"
+  count                   = length(data.aws_availability_zones.available.names)
+  vpc_id                  = aws_vpc.current.id
+  cidr_block              = "10.0.${count.index*10+1}.0/24"
   map_public_ip_on_launch = false
-  availability_zone       = "${element(data.aws_availability_zones.available.names, count.index)}"
-  tags = {
-    Name = "public-${element(data.aws_availability_zones.available.names, count.index)}"
-  }
-  */
+  availability_zone       = element(data.aws_availability_zones.available.names, count.index)
+  tags = merge(local.tags, {
+    Name = "${aws_vpc.current.tags.Name}-private-${element(data.aws_availability_zones.available.names, count.index)}"
+  })
 }
 
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.app-vpc.id
+  count         = length(aws_subnet.public)
+  vpc_id = aws_vpc.current.id
 }
 
 resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.app-vpc.id
+  count         = length(aws_subnet.private)
+  vpc_id = aws_vpc.current.id
 }
 
 resource "aws_route_table_association" "public_subnet" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.public.id
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public[count.index].id
 }
 
 resource "aws_route_table_association" "private_subnet" {
-  subnet_id      = aws_subnet.private.id
-  route_table_id = aws_route_table.private.id
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[count.index].id
 }
 
 resource "aws_eip" "nat" {
+  count         = length(aws_subnet.public)
   vpc = true
 }
 
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.app-vpc.id
+resource "aws_internet_gateway" "current" {
+  vpc_id = aws_vpc.current.id
 }
 
-resource "aws_nat_gateway" "ngw" {
-  subnet_id     = aws_subnet.public.id
-  allocation_id = aws_eip.nat.id
+resource "aws_nat_gateway" "current" {
+  count         = length(aws_subnet.public)
+  subnet_id     = aws_subnet.public[count.index].id
+  allocation_id = aws_eip.nat[count.index].id
 
-  depends_on = [aws_internet_gateway.igw]
+  depends_on = [aws_internet_gateway.current]
 }
 
 resource "aws_route" "public_igw" {
-  route_table_id         = aws_route_table.public.id
+  count                  = length(aws_subnet.public)
+  route_table_id         = aws_route_table.public[count.index].id
   destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.igw.id
+  gateway_id             = aws_internet_gateway.current.id
 }
 
 resource "aws_route" "private_ngw" {
-  route_table_id         = aws_route_table.private.id
+  count                  = length(aws_subnet.private)
+  route_table_id         = aws_route_table.private[count.index].id
   destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.ngw.id
+  nat_gateway_id         = aws_nat_gateway.current[count.index].id
 }
 
 output "vpc" {
-  value = aws_vpc.app-vpc
-}
-
-output "public_subnet_id" {
-  value = aws_subnet.public.id
-}
-
-output "private_subnet_id" {
-  value = aws_subnet.private.id
+  value = aws_vpc.current
 }
